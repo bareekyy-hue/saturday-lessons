@@ -58,6 +58,9 @@ def main():
     shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir()
     (OUT / ".nojekyll").write_text("")
+    # public/ holds files that are open to everyone (e.g. past lessons before 7/11)
+    if (ROOT / "public").exists():
+        shutil.copytree(ROOT / "public", OUT, dirs_exist_ok=True)
 
     def lock_shell(title, binname, kind, d):
         if kind == "student":
@@ -164,6 +167,9 @@ def index_page(lessons, now):
         out.append(f'<div class="week{hl}"><div class="d">{ar_date(l["d"])}{tag}</div>'
                    f'<h2>{html.escape(l["title"])}</h2>{hw}'
                    f'<div class="btns"><a class="st" href="{l["date"]}/student.html">📘 كتاب الطالب والواجب</a></div></div>\n')
+    past = ROOT / "web" / "past_section.html"
+    if past.exists():
+        out.append(past.read_text())
     out.append('<p class="foot"><a href="teacher.html">صفحة المعلمة</a></p>\n</div></body></html>\n')
     return "".join(out)
 

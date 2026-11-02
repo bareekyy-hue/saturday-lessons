@@ -7,6 +7,8 @@ Static lesson site published with GitHub Pages by the **Publish lessons** workfl
 - Lesson files in `sources/` are sealed with `keys/public.pem`. Only the workflow can open them: its private key (`keys/private.lock`) is locked with the teacher password.
 - The password lives only in the repository secret `TEACHER_PASSWORD`. It is never stored in the files.
 
+Files in `public/` (the past lessons before 7/11) are copied to the site as they are, open to everyone, and `web/past_section.html` is added to the bottom of the student page.
+
 ## Add or update a lesson
 
 ```
