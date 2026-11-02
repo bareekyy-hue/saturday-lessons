@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{TITLE}}</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@500;700&family=Noto+Naskh+Arabic:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f6f5f0;--ink:#1f2a24;--muted:#5c665f;--line:#e4e1d7;--green:#1f6b45;--card:#fff;--gold:#8a6114;--err:#a2402e;--btn-ink:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#141a17;--ink:#e9ede9;--muted:#9aa59e;--line:#2b342f;--green:#5fbf8a;--card:#1c2420;--gold:#d9ae5a;--err:#e08a76;--btn-ink:#0f1a14}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Naskh Arabic",serif;font-size:18px;line-height:1.9;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{width:100%;max-width:440px;background:var(--card);border:1px solid var(--line);border-radius:22px;padding:28px 24px;box-shadow:0 10px 30px rgba(40,30,10,.06);text-align:center}
+.ic{font-size:40px;line-height:1}
+h1{font-family:"Noto Kufi Arabic";font-size:20px;margin:10px 0 4px;color:var(--green)}
+.when{font-family:"Noto Kufi Arabic";color:var(--gold);font-size:16px;margin:6px 0 2px}
+p{margin:4px 0;color:var(--muted)}
+form{margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+.lab{font-family:"Noto Kufi Arabic";font-size:13px;color:var(--muted);display:block;margin-bottom:6px}
+input[type=password]{width:100%;font:inherit;font-size:17px;padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);text-align:center}
+.rem{display:flex;gap:8px;align-items:center;justify-content:center;font-size:15px;color:var(--muted);margin:10px 0}
+button{font-family:"Noto Kufi Arabic";font-size:16px;border:0;border-radius:999px;padding:10px 30px;background:var(--green);color:var(--btn-ink);cursor:pointer}
+button[disabled]{opacity:.6}
+.msg{min-height:1.9em;font-size:15px;color:var(--err)}
+.home{display:inline-block;margin-top:14px;font-size:15px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="ic">{{ICON}}</div>
+  <h1>{{HEADING}}</h1>
+  {{NOTICE}}
+  <form id="f" autocomplete="off">
+    <label class="lab" for="pw">{{FORM_LABEL}}</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <label class="rem"><input id="rem" type="checkbox"> تذكّري كلمة المرور على هذا الجهاز</label>
+    <button id="go" type="submit">فتح</button>
+    <div class="msg" id="msg" role="status"></div>
+  </form>
+  <a class="home" href="{{HOME}}">الرجوع إلى قائمة الدروس</a>
+</main>
+<script>
+(function(){
+const SALT=Uint8Array.from(atob("{{SALT}}"),c=>c.charCodeAt(0)), ITER={{ITER}}, BIN="{{BIN}}", SK="rabita-key";
+const $=id=>document.getElementById(id);
+let blob=null;
+const b64=u=>btoa(String.fromCharCode(...u)), unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function getBlob(){ if(!blob){ const r=await fetch(BIN,{cache:"no-cache"}); if(!r.ok) throw new Error("fetch"); blob=new Uint8Array(await r.arrayBuffer()); } return blob; }
+async function derive(pw){
+  const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt:SALT,iterations:ITER},base,256));
+}
+async function openWith(raw){
+  const b=await getBlob();
+  const k=await crypto.subtle.importKey("raw",raw,"AES-GCM",false,["decrypt"]);
+  const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:b.slice(0,12)},k,b.slice(12));
+  const html=await new Response(new Blob([pt]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  return html;
+}
+function show(html){ document.open(); document.write(html); document.close(); }
+function stored(){ try{ return sessionStorage.getItem(SK)||localStorage.getItem(SK); }catch(e){ return null; } }
+function forget(){ try{ sessionStorage.removeItem(SK); localStorage.removeItem(SK); }catch(e){} }
+(async()=>{ const s=stored(); if(!s) return; try{ show(await openWith(unb64(s))); }catch(e){ if(e.message!=="fetch") forget(); } })();
+$("f").addEventListener("submit",async ev=>{
+  ev.preventDefault(); const go=$("go"); go.disabled=true; $("msg").textContent="";
+  try{
+    const raw=await derive($("pw").value);
+    let html; try{ html=await openWith(raw); }catch(e){ if(e.message==="fetch"){ $("msg").textContent="تعذّر تحميل الملف. تأكّدي من الاتصال بالإنترنت."; } else { $("msg").textContent="كلمة المرور غير صحيحة."; } go.disabled=false; return; }
+    try{ sessionStorage.setItem(SK,b64(raw)); if($("rem").checked) localStorage.setItem(SK,b64(raw)); }catch(e){}
+    show(html);
+  }catch(e){ $("msg").textContent="هذا المتصفح لا يدعم فتح الملف. جرّبي متصفحًا أحدث."; go.disabled=false; }
+});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+name: Publish lessons
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Saturdays, every 10 minutes from 05:00 to 07:50 UTC.
+    # 08:00 Finland time is 06:00 UTC in winter and 05:00 UTC in summer;
+    # the build script itself decides, in Finland time, what is open.
+    - cron: "*/10 5-7 * * 6"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet cryptography==43.0.3
+      - name: Build site
+        id: build
+        env:
+          TEACHER_PASSWORD: ${{ secrets.TEACHER_PASSWORD }}
+        run: python tools/build.py
+      - name: Skip unchanged scheduled run
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ steps.build.outputs.changed }}" != "true" ]; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.gate.outputs.go == 'true'
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        if: steps.gate.outputs.go == 'true'
+        id: deploy
+      - name: Save keys and release record
+        if: steps.build.outputs.new_keys == 'true' || steps.build.outputs.changed == 'true'
+        run: |
+          git config user.name "lessons-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add keys state
+          git commit -m "Update keys / open lessons record" || true
+          git push
