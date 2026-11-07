@@ -5,10 +5,13 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    # Saturdays, every 10 minutes from 05:00 to 07:50 UTC.
+    # Saturdays, several times from 04:53 to 07:58 UTC, avoiding the busy
+    # top-of-hour minutes when GitHub often drops scheduled runs.
     # 08:00 Finland time is 06:00 UTC in winter and 05:00 UTC in summer;
     # the build script itself decides, in Finland time, what is open.
-    - cron: "*/10 5-7 * * 6"
+    - cron: "7,13,23,33,43,53,58 4-7 * * 6"
+    # Safety net: also every few hours all week, in case a Saturday run is dropped.
+    - cron: "27 */3 * * *"
 
 permissions:
   contents: write
