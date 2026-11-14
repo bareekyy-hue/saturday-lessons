@@ -1,11 +1,14 @@
 """Build the site into _site/. Run by the GitHub job (needs TEACHER_PASSWORD).
 
 - Teacher guide + slides: always locked with the teacher password.
-- Student book: open from 08:00 Finland time on its lesson Saturday; locked before that.
+- Student book: open from 08:00 Finland time on its lesson Saturday.
+  * Regular lessons are published in advance with a JavaScript time gate (the page and the
+    student index check the clock themselves), so they open on time even if no job runs.
+  * Exam lessons ("exam": true in lessons.json) stay encrypted until a job runs after 08:00.
 First run (no keys yet) creates the repo keys, locked with the teacher password.
 Optional env NOW=YYYY-MM-DDTHH:MM (Finland time) for testing.
 """
-import base64, datetime as dt, html, json, os, pathlib, shutil, sys
+import base64, datetime as dt, html, json, os, pathlib, re, shutil, sys
 from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(__file__))
 import rcrypto as rc
@@ -84,6 +87,8 @@ def main():
         opens = dt.datetime(d.year, d.month, d.day, OPEN_HOUR, tzinfo=TZ)
         l["open"] = now >= opens
         l["d"] = d
+        l["ms"] = int(opens.timestamp() * 1000)
+        l["exam"] = bool(l.get("exam"))
         wd = OUT / l["date"]
         wd.mkdir(exist_ok=True)
         for kind, label in KINDS.items():
@@ -95,6 +100,8 @@ def main():
             title = f"{label} · {ar_date(d)}"
             if kind == "student" and l["open"]:
                 (wd / "student.html").write_bytes(page)
+            elif kind == "student" and not l["exam"]:
+                (wd / "student.html").write_bytes(time_gate(page, l["ms"], d))
             else:
                 (wd / f"{kind}.bin").write_bytes(rc.lock_page(page, page_key))
                 (wd / f"{kind}.html").write_text(lock_shell(title, f"{kind}.bin", kind, d))
@@ -115,9 +122,26 @@ def main():
             print(f"  note: {l['date']} has no {', '.join(l['missing'])}")
 
 
+GATE = """<script id="time-gate">(function(){var O=%(ms)d;if(/[?&]preview\\b/.test(location.search)||Date.now()>=O)return;
+document.write('<style id="gate-css">body>*:not(#gate){display:none!important}#gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;background:#f6f5f0;color:#1f2a24;font:18px/1.9 "Noto Naskh Arabic",serif;direction:rtl;text-align:center;z-index:2147483647}#gate *{background-image:none;text-shadow:none;box-shadow:none;border-bottom:0;-webkit-text-fill-color:currentColor;letter-spacing:normal;animation:none}#gate .gate-c{width:100%%;max-width:440px;background:#fff;border:1px solid #e4e1d7;border-radius:22px;padding:28px 24px}#gate h1{font:700 20px "Noto Kufi Arabic",sans-serif;color:#1f6b45;margin:10px 0 4px}#gate .gate-w{font:700 16px "Noto Kufi Arabic",sans-serif;color:#8a6114;margin:6px 0 2px}#gate p{margin:4px 0;color:#5c665f}#gate a{display:inline-block;margin-top:14px;color:#5c665f;font-size:15px}@media (prefers-color-scheme:dark){#gate{background:#141a17;color:#e9ede9}#gate .gate-c{background:#1c2420;border-color:#2b342f}#gate h1{color:#5fbf8a}#gate .gate-w{color:#d9ae5a}#gate p,#gate a{color:#9aa59e}}</style>');
+function show(){if(document.getElementById("gate"))return;var g=document.createElement("div");g.id="gate";g.innerHTML='<div class="gate-c"><div style="font-size:40px;line-height:1">📘</div><h1>كتاب الطالب لم يُفتح بعد</h1><p>يُفتح هذا الدرس يوم</p><p class="gate-w">%(when)s · الساعة 8:00 صباحًا</p><p>بتوقيت فنلندا</p><a href="../index.html">الرجوع إلى قائمة الدروس</a></div>';document.body.insertBefore(g,document.body.firstChild)}
+if(document.body)show();else document.addEventListener("DOMContentLoaded",show);
+setTimeout(function(){location.reload()},Math.min(O-Date.now()+1500,2147000000));})();</script>"""
+
+
+def time_gate(page: bytes, ms: int, d) -> bytes:
+    """Add a script that hides the student book until `ms` (epoch ms) in the viewer's browser."""
+    tag = (GATE % {"ms": ms, "when": ar_date(d)}).encode("utf-8")
+    m = re.search(rb"<meta charset=[\"']?utf-8[\"']?\s*/?>", page, re.I) or re.search(rb"<head[^>]*>", page, re.I)
+    if not m:
+        return tag + page
+    return page[:m.end()] + b"\n" + tag + page[m.end():]
+
+
 CSS = """:root{--bg:#f6f5f0;--ink:#1f2a24;--muted:#5c665f;--line:#e4e1d7;--green:#1f6b45;--card:#fff;--gold:#8a6114;--soft:#f1ede2;--new:#e1f4e7;--btn-ink:#fff}
 @media (prefers-color-scheme:dark){:root{--bg:#141a17;--ink:#e9ede9;--muted:#9aa59e;--line:#2b342f;--green:#5fbf8a;--card:#1c2420;--gold:#d9ae5a;--soft:#26302b;--new:#1f3a2b;--btn-ink:#0f1a14}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Naskh Arabic",serif;font-size:18px;line-height:1.9}
 .wrap{max-width:760px;margin:0 auto;padding:40px 16px 60px}
 h1{font-family:"Noto Kufi Arabic";color:var(--green);font-size:28px;margin:0}
@@ -149,24 +173,45 @@ HEAD = """<!doctype html>
 """
 
 
+INDEX_JS = """<script>(function(){
+// Regular lessons are listed in advance (hidden) and shown here once their time comes,
+// so the list updates at 08:00 even if no build runs. Exams appear only after a build opens them.
+var now=Date.now(),first=null,next=null;
+document.querySelectorAll(".week[data-open]").forEach(function(w){
+  if(now>=+w.getAttribute("data-open"))w.hidden=false;
+  if(!w.hidden&&!first)first=w;
+});
+if(first){
+  first.classList.add("hl");
+  var t=document.createElement("span");t.className="tag";t.textContent="جديد";
+  first.querySelector(".d").appendChild(document.createTextNode(" "));first.querySelector(".d").appendChild(t);
+  var p=document.createElement("p");p.textContent="واجب هذا الأسبوع في «كتاب الطالب» ← تبويب «واجبي».";
+  first.querySelector("h2").after(p);
+}
+document.querySelectorAll("[data-next]").forEach(function(n){
+  if(!next&&now<+n.getAttribute("data-next"))next=n;
+});
+if(next){var c=document.getElementById("next");c.querySelector(".d").textContent=next.getAttribute("data-when");c.hidden=false;
+  setTimeout(function(){location.reload()},Math.min(+next.getAttribute("data-next")-now+1500,2147000000));}
+})();</script>
+"""
+
+
 def index_page(lessons, now):
-    opened = [l for l in lessons if l["open"]]
-    upcoming = [l for l in lessons if not l["open"]]
     out = [HEAD.format(title="دروس السبت · مدرسة الرابطة", css=CSS),
            "<h1>دروس السبت</h1>\n<p class=\"sub\">مدرسة الرابطة الإسلامية · الدرس الجديد في الأعلى دائمًا</p>\n"]
-    if upcoming:
-        n = upcoming[0]
-        out.append(f'<div class="week"><div class="d">{ar_date(n["d"])}</div>'
-                   f'<h2>الدرس القادم</h2><p>يُفتح كتاب الطالب يوم السبت الساعة 8:00 صباحًا بتوقيت فنلندا.</p></div>\n')
-    for i, l in enumerate(reversed(opened)):
-        if "student" in l.get("missing", []):
+    # all opening times, oldest first, for the "next lesson" card
+    out.append("".join(f'<i hidden data-next="{l["ms"]}" data-when="{ar_date(l["d"])}"></i>' for l in lessons) + "\n")
+    out.append('<div class="week" id="next" hidden><div class="d"></div>'
+               '<h2>الدرس القادم</h2><p>يُفتح كتاب الطالب يوم السبت الساعة 8:00 صباحًا بتوقيت فنلندا.</p></div>\n')
+    for l in reversed(lessons):
+        if "student" in l.get("missing", []) or (l["exam"] and not l["open"]):
             continue
-        tag = ' <span class="tag">جديد</span>' if i == 0 else ""
-        hl = " hl" if i == 0 else ""
-        hw = "<p>واجب هذا الأسبوع في «كتاب الطالب» ← تبويب «واجبي».</p>" if i == 0 else ""
-        out.append(f'<div class="week{hl}"><div class="d">{ar_date(l["d"])}{tag}</div>'
-                   f'<h2>{html.escape(l["title"])}</h2>{hw}'
+        hidden = "" if l["open"] else " hidden"
+        out.append(f'<div class="week" data-open="{l["ms"]}"{hidden}><div class="d">{ar_date(l["d"])}</div>'
+                   f'<h2>{html.escape(l["title"])}</h2>'
                    f'<div class="btns"><a class="st" href="{l["date"]}/student.html">📘 كتاب الطالب والواجب</a></div></div>\n')
+    out.append(INDEX_JS)
     past = ROOT / "web" / "past_section.html"
     if past.exists():
         out.append(past.read_text())
@@ -177,16 +222,24 @@ def index_page(lessons, now):
 def teacher_page(lessons):
     out = [HEAD.format(title="صفحة المعلمة · دروس السبت", css=CSS),
            "<h1>صفحة المعلمة</h1>\n<p class=\"sub\">كل الدروس. الدليل والعرض مقفلان بكلمة المرور دائمًا، "
-           "وكتاب الطالب مقفل حتى الساعة 8:00 صباح يوم درسه.</p>\n"]
+           "وكتاب الطالب يُفتح للطلاب الساعة 8:00 صباح يوم درسه (الاختبارات مشفّرة حتى ذلك الوقت).</p>\n"]
     for l in lessons:
-        tag = ' <span class="tag">مفتوح للطلاب</span>' if l["open"] else ""
+        if l["open"]:
+            tag = ' <span class="tag">مفتوح للطلاب</span>'
+        elif not l["exam"]:  # opens by itself in the browser
+            tag = f' <span class="tag" data-open="{l["ms"]}" hidden>مفتوح للطلاب</span>'
+        else:
+            tag = ' <span class="tag">اختبار · يُفتح بعد تشغيل النشر</span>'
         btn = []
         for kind, label, cls in (("slides", "🖥 عرض الحصة", "st"), ("guide", "📗 دليل المعلمة", "pr"),
                                  ("student", "📘 كتاب الطالب", "pr")):
             if kind not in l.get("missing", []):
-                btn.append(f'<a class="{cls}" href="{l["date"]}/{kind}.html">{label}</a>')
+                q = "?preview" if kind == "student" and not l["open"] and not l["exam"] else ""
+                btn.append(f'<a class="{cls}" href="{l["date"]}/{kind}.html{q}">{label}</a>')
         out.append(f'<div class="week"><div class="d">{ar_date(l["d"])}{tag}</div>'
                    f'<h2>{html.escape(l["title"])}</h2><div class="btns">{"".join(btn)}</div></div>\n')
+    out.append('<script>document.querySelectorAll(".tag[data-open]").forEach(function(t){'
+               'if(Date.now()>=+t.getAttribute("data-open"))t.hidden=false})</script>\n')
     out.append('<p class="foot"><a href="index.html">صفحة الطلاب</a> · '
                '<button type="button" onclick="try{sessionStorage.removeItem(\'rabita-key\');'
                'localStorage.removeItem(\'rabita-key\')}catch(e){};this.textContent=\'تم. نُسيت كلمة المرور على هذا الجهاز\'">'
