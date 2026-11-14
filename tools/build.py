@@ -88,6 +88,10 @@ def main():
         l["open"] = now >= opens
         l["d"] = d
         l["ms"] = int(opens.timestamp() * 1000)
+        # end of the lesson Saturday (Sunday 00:00 Finland time): from then on the teacher page
+        # moves on to the next lesson
+        nxt = d + dt.timedelta(days=1)
+        l["end"] = int(dt.datetime(nxt.year, nxt.month, nxt.day, tzinfo=TZ).timestamp() * 1000)
         l["exam"] = bool(l.get("exam"))
         wd = OUT / l["date"]
         wd.mkdir(exist_ok=True)
@@ -219,10 +223,39 @@ def index_page(lessons, now):
     return "".join(out)
 
 
+TEACHER_JS = """<h3 id="h-past" hidden>الدروس السابقة</h3><div id="past"></div>
+<h3 id="h-later" hidden>الدروس اللاحقة</h3><div id="later"></div>
+<script>(function(){
+// Order by the clock, so it changes by itself without a build: the lesson of the coming
+// Saturday first (it stays first through its Saturday; from Sunday the next one takes over),
+// then past lessons (newest first), then the later ones.
+var now=Date.now(),cur=null,past=[],later=[];
+document.querySelectorAll(".tag[data-open]").forEach(function(t){if(now>=+t.getAttribute("data-open"))t.hidden=false});
+document.querySelectorAll(".week[data-end]").forEach(function(w){
+  var end=+w.getAttribute("data-end");
+  if(now>=end)past.push(w);else if(!cur)cur=w;else later.push(w);
+});
+var top=document.getElementById("now");
+if(cur){
+  cur.classList.add("hl");
+  var today=now>=+cur.getAttribute("data-end")-864e5;
+  document.getElementById("h-now").textContent=today?"درس اليوم":"درس الحصة القادمة";
+  document.getElementById("h-now").hidden=false;top.appendChild(cur);
+  setTimeout(function(){location.reload()},Math.min(+cur.getAttribute("data-end")-now+1500,2147000000));
+}
+past.reverse().forEach(function(w){document.getElementById("past").appendChild(w)});
+later.forEach(function(w){document.getElementById("later").appendChild(w)});
+document.getElementById("h-past").hidden=!past.length;
+document.getElementById("h-later").hidden=!later.length;
+})();</script>
+"""
+
+
 def teacher_page(lessons):
     out = [HEAD.format(title="صفحة المعلمة · دروس السبت", css=CSS),
-           "<h1>صفحة المعلمة</h1>\n<p class=\"sub\">كل الدروس. الدليل والعرض مقفلان بكلمة المرور دائمًا، "
-           "وكتاب الطالب يُفتح للطلاب الساعة 8:00 صباح يوم درسه (الاختبارات مشفّرة حتى ذلك الوقت).</p>\n"]
+           "<h1>صفحة المعلمة</h1>\n<p class=\"sub\">الدليل والعرض مقفلان بكلمة المرور دائمًا، "
+           "وكتاب الطالب يُفتح للطلاب الساعة 8:00 صباح يوم درسه (الاختبارات مشفّرة حتى ذلك الوقت).</p>\n"
+           '<h3 id="h-now" style="color:var(--green);font-size:18px" hidden></h3><div id="now"></div>\n']
     for l in lessons:
         if l["open"]:
             tag = ' <span class="tag">مفتوح للطلاب</span>'
@@ -236,10 +269,9 @@ def teacher_page(lessons):
             if kind not in l.get("missing", []):
                 q = "?preview" if kind == "student" and not l["open"] and not l["exam"] else ""
                 btn.append(f'<a class="{cls}" href="{l["date"]}/{kind}.html{q}">{label}</a>')
-        out.append(f'<div class="week"><div class="d">{ar_date(l["d"])}{tag}</div>'
+        out.append(f'<div class="week" data-end="{l["end"]}"><div class="d">{ar_date(l["d"])}{tag}</div>'
                    f'<h2>{html.escape(l["title"])}</h2><div class="btns">{"".join(btn)}</div></div>\n')
-    out.append('<script>document.querySelectorAll(".tag[data-open]").forEach(function(t){'
-               'if(Date.now()>=+t.getAttribute("data-open"))t.hidden=false})</script>\n')
+    out.append(TEACHER_JS)
     out.append('<p class="foot"><a href="index.html">صفحة الطلاب</a> · '
                '<button type="button" onclick="try{sessionStorage.removeItem(\'rabita-key\');'
                'localStorage.removeItem(\'rabita-key\')}catch(e){};this.textContent=\'تم. نُسيت كلمة المرور على هذا الجهاز\'">'
